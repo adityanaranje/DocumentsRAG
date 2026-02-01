@@ -1,9 +1,6 @@
 flask
 gunicorn
 flask-cors
-fastapi
-uvicorn
-python-multipart
 langchain
 langchain-community
 langchain-core
@@ -19,7 +16,6 @@ tqdm
 langchain-huggingface
 SpeechRecognition
 langchain-groq
-streamlit
 requests
 pdfplumber
 python-docx
