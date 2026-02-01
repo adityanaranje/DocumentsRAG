@@ -1,0 +1,82 @@
+{
+    "providers": [
+        {
+            "name": "Canara HSBC",
+            "categories": [
+                "Term Plan",
+                "Retirement Plan",
+                "ULIP Plan"
+            ]
+        },
+        {
+            "name": "Aviva",
+            "categories": [
+                "Term Plan",
+                "Savings Plan",
+                "ULIP Plan"
+            ]
+        },
+         {
+            "name": "Bharti Axa",
+            "categories": [
+                "Ulip Plan",
+                "Retirement Plan",
+                "Saving Plan"
+            ]
+        },
+        {
+            "name": "PRAMERICA",
+            "categories": [
+                "ULIP Plan",
+                "Health Plan",
+                "Retirement Plan",
+                "Savings Plan",
+                "Term Plan"
+            ]
+        },
+        {
+            "name": "TATA AIA",
+            "categories": [
+                "Combo",
+                "Health Plan",
+                "Retirement and Pension Plan",
+                "Savings Plan",
+                "ULIP Plans",
+                "Term Plans"
+            ]
+        },
+         {
+            "name": "IndusInd Nippon",
+            "categories": [
+                "Combo Plan",
+                "Pension Plan",
+                "Savings Plan",
+                "ULIP Plan",
+                "Term Plan"
+            ]
+        },
+        {
+            "name": "Edelweiss Life",
+            "categories": [
+                "Term Insurance Plans",
+                "Group Solutions",
+                "Guaranteed Income Plans",
+                "Micro Plans",
+                "Wealth Creation Plans"
+            ]
+        },
+        {
+            "name": "Generali Central",
+            "categories": [
+                "Term Plan",
+                "Savings Plan",
+                "ULIP Plan",
+                "Pension Plan"
+            ]
+        },
+        {
+            "name": "Other",
+            "categories": []
+        }
+    ]
+}

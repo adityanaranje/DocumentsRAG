@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Insurance Advisory AI | Premium Advisor</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+
+<body>
+    <aside class="sidebar">
+        <div class="logo">
+            <i class="fas fa-shield-halved fa-2x" style="color: #818cf8;"></i>
+            <span>AI ADVISOR</span>
+        </div>
+
+        <div class="sidebar-section">
+            <h3>Document Manager</h3>
+            <div class="form-group">
+                <select id="provider-select">
+                    <!-- Loaded dynamically -->
+                </select>
+            </div>
+            <div class="form-group" id="other-provider-group" style="display: none;">
+                <input type="text" id="other-provider" placeholder="Provider Name">
+            </div>
+            <div class="form-group">
+                <select id="category-select">
+                    <!-- Loaded dynamically -->
+                </select>
+            </div>
+            <div class="form-group" id="other-category-group" style="display: none;">
+                <input type="text" id="other-category" placeholder="Category Name">
+            </div>
+
+            <div class="form-group">
+                <label
+                    style="font-size: 0.8rem; color: var(--text-muted); display: block; margin-bottom: 0.5rem;">Mode</label>
+                <div style="display: flex; gap: 10px;">
+                    <label style="font-size: 0.85rem;"><input type="radio" name="upload-mode" value="New Upload"
+                            checked> New</label>
+                    <label style="font-size: 0.85rem;"><input type="radio" name="upload-mode" value="Modify Existing">
+                        Modify</label>
+                </div>
+            </div>
+
+            <div class="form-group" id="modify-group" style="display: none;">
+                <select id="file-to-modify">
+                    <option value="">Select file...</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <input type="file" id="doc-upload" hidden accept=".pdf,.docx">
+                <button class="primary-btn" id="upload-trigger">
+                    <i class="fas fa-file-upload"></i> &nbsp; Choose & Process
+                </button>
+            </div>
+        </div>
+
+        <div class="status-container">
+            <div class="status-row">
+                <span>Ingestion Status</span>
+                <span id="status-text" style="color: #fbbf24;">Idle</span>
+            </div>
+            <div class="progress-track">
+                <div class="progress-bar" id="status-bar"></div>
+            </div>
+        </div>
+
+        <button class="primary-btn" style="background: rgba(255,255,255,0.05); margin-top: 1rem;" id="clear-chat">
+            <i class="fas fa-trash-alt"></i> &nbsp; Clear History
+        </button>
+    </aside>
+
+    <main class="main-content">
+        <header style="margin-bottom: 2rem;">
+            <h1 style="font-size: 1.8rem;">Direct-to-Agent Policy Advisory</h1>
+            <p style="color: var(--text-muted);">Get grounded answers from your insurance documents.</p>
+            <p style="color: var(--text-muted);">Please Note :- This response is based solely on insurer-provided
+                documents and is not financial advice.</p>
+        </header>
+
+        <div class="chat-container glass-card">
+            <div class="chat-messages" id="chat-box">
+                <!-- Welcome Message -->
+                <div class="message bot-message">
+                    Hello! I'm your Insurance AI Advisor. How can I help you today?
+                </div>
+            </div>
+
+            <div class="input-area">
+                <input type="file" id="audio-upload" hidden accept=".wav">
+                <button class="audio-btn" id="audio-trigger" title="Upload Audio (.wav)">
+                    <i class="fas fa-upload"></i>
+                </button>
+                <input type="text" id="user-input"
+                    placeholder="Ask about waiting periods, eligibility, or compare plans..." autocomplete="off">
+                <button class="send-btn" id="send-trigger">
+                    <i class="fas fa-paper-plane"></i>
+                </button>
+            </div>
+        </div>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+
+</html>

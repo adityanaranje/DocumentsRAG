@@ -1,0 +1,10 @@
+.venv/
+.env
+__pycache__/
+*.pyc
+.streamlit/
+temp_docs/
+temp_faiss_index/
+debug_*.txt
+test_*.txt
+*.log
