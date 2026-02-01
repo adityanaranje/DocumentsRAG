@@ -430,32 +430,33 @@ class AgentNodes:
             # This helps the retriever find relevant feature chunks for the specific plan
             focused_query = f"features, benefits, eligibility and exclusions of {matched}"
             
-            # Use a fresh, strictly focused filter for each plan
-            # IMPORTANT: Search by insurer and manually filter by product_name
-            # This is more robust than passing a combined filter to the vector store
+            # Find the insurer for this product from cache for better filtering
             matched_insurer = None
             if hasattr(self, "_cached_plans") and self._cached_plans:
                 for p_meta in self._cached_plans:
                     if p_meta["product_name"] == matched:
                         matched_insurer = p_meta.get("insurer")
                         break
+
+            # IMPORTANT: Search by product_name directly if possible
+            search_filters = {"product_name": matched}
+            if matched_insurer:
+                search_filters["insurer"] = matched_insurer
             
-            search_filters = {"insurer": matched_insurer} if matched_insurer else {}
-            
-            # Search only by insurer and then manually filter by product_name
-            # This is more robust than passing a combined filter to the vector store
-            docs = retriever.search(focused_query, filters=search_filters, k=50)
+            # Use a slightly lower k because we are being very specific with the filter
+            docs = retriever.search(focused_query, filters=search_filters, k=20)
             
             plan_chunks = []
             for doc in docs:
                 doc_product = doc.metadata.get("product_name", "")
-                # Use fuzzy match for manual filter consistency
+                # Final check for safety, but with accurate fuzzy matching
                 if self._find_closest_plan_name(doc_product, [matched]) == matched:
                     plan_chunks.append(doc)
             
-            for doc in plan_chunks[:10]:
-                plan_id = doc.metadata.get("plan_id", matched)
-                chunks_by_plan[plan_id].append({
+            for doc in plan_chunks[:8]:
+                # Use product_name for the key instead of plan_id to ensure clean table headers
+                plan_name = doc.metadata.get("product_name", matched)
+                chunks_by_plan[plan_name].append({
                     "content": doc.page_content,
                     "product_name": doc.metadata.get("product_name"),
                     "document_type": doc.metadata.get("document_type", "brochure"),
@@ -468,8 +469,9 @@ class AgentNodes:
         """Group retrieved documents by plan_id."""
         grouped = defaultdict(list)
         for doc in docs:
-            plan_id = doc.metadata.get("plan_id", doc.metadata.get("product_name", "unknown"))
-            grouped[plan_id].append({
+            # Prefer product_name for display keys
+            plan_name = doc.metadata.get("product_name", doc.metadata.get("plan_id", "unknown"))
+            grouped[plan_name].append({
                 "content": doc.page_content,
                 "product_name": doc.metadata.get("product_name"),
                 "document_type": doc.metadata.get("document_type", "brochure"),
@@ -859,7 +861,9 @@ For general insurance terminology questions:
         
         # 3. Word overlap (Lower Confidence fallback)
         query_words = set(query_plan.lower().split())
-        stop_words = {"tata", "aia", "edelweiss", "life", "generali", "central", "plan", "insurance", "the", "a", "of", "with", "compare"}
+        # REMOVED insurer names from stop_words because they are critical for distinguishing 
+        # similar plan names (like 'Saral Jeevan Bima') across different companies.
+        stop_words = {"plan", "insurance", "the", "a", "of", "with", "compare", "is", "between"}
         query_significant = query_words - stop_words
         
         best_match = None
