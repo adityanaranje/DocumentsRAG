@@ -9,13 +9,27 @@ document.addEventListener('DOMContentLoaded', () => {
     const otherProviderGroup = document.getElementById('other-provider-group');
     const modifyGroup = document.getElementById('modify-group');
     const fileToModify = document.getElementById('file-to-modify');
+    const sidebar = document.getElementById('sidebar');
+    const sidebarToggle = document.getElementById('sidebar-toggle');
     const statusBar = document.getElementById('status-bar');
     const statusText = document.getElementById('status-text');
     const clearChat = document.getElementById('clear-chat');
     const audioUpload = document.getElementById('audio-upload');
     const audioTrigger = document.getElementById('audio-trigger');
 
+    // --- Sidebar Toggle Logic ---
+    const isSidebarCollapsed = localStorage.getItem('sidebarCollapsed') === 'true';
+    if (isSidebarCollapsed) {
+        sidebar.classList.add('collapsed');
+    }
+
+    sidebarToggle.addEventListener('click', () => {
+        sidebar.classList.toggle('collapsed');
+        localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed'));
+    });
+
     let chatHistory = [];
+    let extractedEntities = {}; // State persistence
     let isProcessing = false;
     let configData = null;
 
@@ -32,7 +46,7 @@ document.addEventListener('DOMContentLoaded', () => {
         providerSelect.innerHTML = configData.providers.map(p =>
             `<option value="${p.name}">${p.name}</option>`
         ).join('');
-        // Trigger initial category load
+        // Trigger initial load
         populateCategories();
     }
 
@@ -41,7 +55,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const provider = configData.providers.find(p => p.name === selectedProviderName);
         let categories = provider ? [...provider.categories] : [];
 
-        // Ensure "Other..." is available
         if (!categories.includes("Other...")) {
             categories.push("Other...");
         }
@@ -50,7 +63,6 @@ document.addEventListener('DOMContentLoaded', () => {
             `<option value="${c}">${c}</option>`
         ).join('');
 
-        // Reset category input visibility
         const otherCategoryGroup = document.getElementById('other-category-group');
         if (otherCategoryGroup) {
             otherCategoryGroup.style.display = categorySelect.value === 'Other...' ? 'block' : 'none';
@@ -85,12 +97,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
         for (let i = 0; i < words.length; i++) {
             currentText += words[i] + ' ';
-            msgDiv.innerHTML = marked.parse(currentText + '▌'); // Add cursor effect
+            msgDiv.innerHTML = marked.parse(currentText + '▌');
             chatBox.scrollTop = chatBox.scrollHeight;
-            await new Promise(resolve => setTimeout(resolve, 30)); // Snappy speed
+            await new Promise(resolve => setTimeout(resolve, 30));
         }
 
-        msgDiv.innerHTML = marked.parse(fullText); // Final render without cursor
+        msgDiv.innerHTML = marked.parse(fullText);
         chatBox.scrollTop = chatBox.scrollHeight;
     }
 
@@ -102,7 +114,6 @@ document.addEventListener('DOMContentLoaded', () => {
         userInput.value = '';
         isProcessing = true;
 
-        // Add typing indicator
         const typingDiv = document.createElement('div');
         typingDiv.className = 'message bot-message';
         typingDiv.textContent = 'Typing...';
@@ -113,11 +124,21 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch('/api/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ prompt, history: chatHistory })
+                body: JSON.stringify({
+                    prompt,
+                    history: chatHistory,
+                    extracted_entities: extractedEntities
+                })
             });
             const data = await response.json();
 
             chatBox.removeChild(typingDiv);
+
+            // Update state from backend response
+            if (data.extracted_entities) {
+                extractedEntities = data.extracted_entities;
+            }
+
             if (data.answer) {
                 addMessage(data.answer, 'bot');
                 chatHistory.push(prompt);
@@ -142,6 +163,7 @@ document.addEventListener('DOMContentLoaded', () => {
     clearChat.addEventListener('click', () => {
         chatBox.innerHTML = '<div class="message bot-message">Chat history cleared. How can I help?</div>';
         chatHistory = [];
+        extractedEntities = {}; // Reset state
     });
 
     // --- Audio Chat Logic ---
@@ -155,10 +177,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const formData = new FormData();
         formData.append('audio', file);
         formData.append('history', JSON.stringify(chatHistory));
+        formData.append('extracted_entities', JSON.stringify(extractedEntities));
 
         isProcessing = true;
 
-        // Add "Audio Uploaded" user message with Play button
         const userMsgDiv = document.createElement('div');
         userMsgDiv.className = 'message user-message audio-message-bubble';
         userMsgDiv.innerHTML = `
@@ -172,7 +194,6 @@ document.addEventListener('DOMContentLoaded', () => {
         chatBox.appendChild(userMsgDiv);
         chatBox.scrollTop = chatBox.scrollHeight;
 
-        // Play functionality
         const playBtn = userMsgDiv.querySelector('.play-btn');
         const audio = new Audio(audioUrl);
 
@@ -201,7 +222,6 @@ document.addEventListener('DOMContentLoaded', () => {
             alert("Error loading the audio file for playback.");
         };
 
-        // Add typing indicator
         const typingDiv = document.createElement('div');
         typingDiv.className = 'message bot-message';
         typingDiv.textContent = 'Transcribing audio...';
@@ -216,13 +236,19 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await response.json();
 
             chatBox.removeChild(typingDiv);
+
+            // Update state from backend response
+            if (data.extracted_entities) {
+                extractedEntities = data.extracted_entities;
+            }
+
             if (data.transcription) {
                 const transDiv = document.createElement('div');
                 transDiv.innerHTML = `
-                    <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 4px;">Raw Transcript:</div>
-                    <div style="font-size: 0.85rem; font-style: italic; opacity: 0.7; margin-bottom: 12px;">"${data.transcription}"</div>
-                    <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 4px;">Refined Question:</div>
-                    <div style="font-size: 1rem; font-weight: 600; color: #818cf8;">"${data.summarized_question || data.transcription}"</div>
+                    <div style="font-size: 0.75rem; color: rgba(255,255,255,0.7); margin-bottom: 4px;">Raw Transcript:</div>
+                    <div style="font-size: 0.85rem; font-style: italic; color: rgba(255,255,255,0.9); margin-bottom: 12px;">"${data.transcription}"</div>
+                    <div style="font-size: 0.75rem; color: rgba(255,255,255,0.7); margin-bottom: 4px;">Refined Question:</div>
+                    <div style="font-size: 1rem; font-weight: 600; color: #ffffff; text-shadow: 0 2px 4px rgba(0,0,0,0.2);">"${data.summarized_question || data.transcription}"</div>
                 `;
                 transDiv.style.marginTop = '12px';
                 transDiv.style.borderTop = '1px solid rgba(255,255,255,0.1)';

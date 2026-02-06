@@ -4,7 +4,11 @@ from typing import List, Dict, Optional, Any
 from agents.graph import app as agent_app
 # from ingestion.pipeline import IngestionPipeline # Optional: Trigger via API
 
+from api.plans import router as plans_router
+
 app = FastAPI(title="Insurance Advisory AI Agent", version="1.0.0")
+
+app.include_router(plans_router)
 
 class ChatRequest(BaseModel):
     message: str

@@ -10,14 +10,24 @@
 </head>
 
 <body>
-    <aside class="sidebar">
-        <div class="logo">
-            <i class="fas fa-shield-halved fa-2x" style="color: #818cf8;"></i>
-            <span>AI ADVISOR</span>
+    <div class="bg-glow-container">
+        <div class="glow-blob glow-1"></div>
+        <div class="glow-blob glow-2"></div>
+        <div class="glow-blob glow-3"></div>
+    </div>
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <div class="logo">
+                <i class="fas fa-shield-halved fa-2x" style="color: var(--primary);"></i>
+                <span>AI ADVISOR</span>
+            </div>
+            <button class="sidebar-toggle" id="sidebar-toggle">
+                <i class="fas fa-bars"></i>
+            </button>
         </div>
 
         <div class="sidebar-section">
-            <h3>Document Manager</h3>
+            <h3><span>Document Manager</span></h3>
             <div class="form-group">
                 <select id="provider-select">
                     <!-- Loaded dynamically -->
@@ -36,13 +46,12 @@
             </div>
 
             <div class="form-group">
-                <label
-                    style="font-size: 0.8rem; color: var(--text-muted); display: block; margin-bottom: 0.5rem;">Mode</label>
-                <div style="display: flex; gap: 10px;">
+                <label><span>Mode</span></label>
+                <div class="radio-group" style="display: flex; gap: 10px;">
                     <label style="font-size: 0.85rem;"><input type="radio" name="upload-mode" value="New Upload"
-                            checked> New</label>
+                            checked> <span>New</span></label>
                     <label style="font-size: 0.85rem;"><input type="radio" name="upload-mode" value="Modify Existing">
-                        Modify</label>
+                        <span>Modify</span></label>
                 </div>
             </div>
 
@@ -54,8 +63,8 @@
 
             <div class="form-group">
                 <input type="file" id="doc-upload" hidden accept=".pdf,.docx">
-                <button class="primary-btn" id="upload-trigger">
-                    <i class="fas fa-file-upload"></i> &nbsp; Choose & Process
+                <button class="primary-btn" id="upload-trigger" title="Upload Document">
+                    <i class="fas fa-file-upload"></i> <span>&nbsp; Choose & Process</span>
                 </button>
             </div>
         </div>
@@ -70,17 +79,18 @@
             </div>
         </div>
 
-        <button class="primary-btn" style="background: rgba(255,255,255,0.05); margin-top: 1rem;" id="clear-chat">
-            <i class="fas fa-trash-alt"></i> &nbsp; Clear History
+        <button class="primary-btn" style="background: rgba(255,255,255,0.05); margin-top: 1rem;" id="clear-chat"
+            title="Clear History">
+            <i class="fas fa-trash-alt"></i> <span>&nbsp; Clear History</span>
         </button>
     </aside>
 
     <main class="main-content">
-        <header style="margin-bottom: 2rem;">
-            <h1 style="font-size: 1.8rem;">Direct-to-Agent Policy Advisory</h1>
+        <header class="content-header">
+            <h1>Direct-to-Agent Policy Advisory</h1>
             <p style="color: var(--text-muted);">Get grounded answers from your insurance documents.</p>
-            <p style="color: var(--text-muted);">Please Note :- This response is based solely on insurer-provided
-                documents and is not financial advice.</p>
+            <p style="font-size: 0.85rem; opacity: 0.8; margin-top: 5px;">Note: This response is based solely on
+                insurer-provided documents and is not financial advice.</p>
         </header>
 
         <div class="chat-container glass-card">

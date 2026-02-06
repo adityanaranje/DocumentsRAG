@@ -19,3 +19,5 @@ langchain-groq
 requests
 pdfplumber
 python-docx
+tenacity
+langsmith

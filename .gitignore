@@ -1,10 +1,35 @@
-.venv/
-.env
+# Python Caches
 __pycache__/
-*.pyc
-.streamlit/
-temp_docs/
-temp_faiss_index/
-debug_*.txt
-test_*.txt
+*.py[cod]
+*$py.class
+
+# SQLite Databases (Recreated at runtime)
+*.db
+*.sqlite3
+
+# Logs
+logs/
 *.log
+extraction_debug.log
+
+# Environment
+.env
+env/
+venv/
+.venv/
+.python-version
+
+# Temporary Test Scripts
+verify_fix.py
+test_llm.py
+test_classifier_fix.py
+test_api_logic.py
+verify_extraction.py
+
+# RAG specific
+rag/faiss_index/
+rag/embeddings_cache.json
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -5,11 +5,16 @@ import operator
 class UserProfile(TypedDict, total=False):
     """User profile for recommendation intent."""
     age: Optional[int]
+    gender: Optional[str]  # "male", "female"
     income: Optional[str]
     smoker: Optional[bool]
     dependents: Optional[int]
     goal: Optional[str]  # "protection", "savings", "retirement", "wealth"
     cover_amount: Optional[str]  # e.g., "1 Cr", "50 Lakh"
+    premium_amount: Optional[str]  # e.g., "1 Lakh", "50000"
+    policy_term: Optional[str] # PT
+    payment_term: Optional[str] # PPT
+    payment_mode: Optional[str] # Mode (Monthly, Annual, etc.)
 
 
 class ExtractedEntities(TypedDict, total=False):
@@ -31,6 +36,7 @@ class AgentState(TypedDict):
     
     # Query Classification
     intent: str  # 'list_plans', 'plan_details', 'compare_plans', 'recommendation', 'general_query'
+    query_complexity: str # 'low' | 'high'
     
     # Entity Extraction
     extracted_entities: ExtractedEntities

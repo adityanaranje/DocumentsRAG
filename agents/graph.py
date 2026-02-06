@@ -44,7 +44,6 @@ def build_rag_workflow() -> StateGraph:
     # Agent nodes
     workflow.add_node("listing_agent", nodes.listing_agent)
     workflow.add_node("retrieval_agent", nodes.retrieval_agent)
-    workflow.add_node("comparison_agent", nodes.comparison_agent)
     workflow.add_node("advisory_agent", nodes.advisory_agent)
     workflow.add_node("faq_agent", nodes.faq_agent)
     
@@ -69,10 +68,8 @@ def build_rag_workflow() -> StateGraph:
         intent = state.get("intent", "plan_details")
         
         if intent == "list_plans":
-            # Listing doesn't need retrieval, goes direct to listing agent
             return "listing_agent"
         else:
-            # All other intents go through retrieval first
             return "retriever"
     
     workflow.add_conditional_edges(
@@ -97,7 +94,6 @@ def build_rag_workflow() -> StateGraph:
         
         route_map = {
             "plan_details": "retrieval_agent",
-            "compare_plans": "comparison_agent",
             "recommendation": "advisory_agent",
             "general_query": "faq_agent"
         }
@@ -109,7 +105,6 @@ def build_rag_workflow() -> StateGraph:
         route_to_agent,
         {
             "retrieval_agent": "retrieval_agent",
-            "comparison_agent": "comparison_agent",
             "advisory_agent": "advisory_agent",
             "faq_agent": "faq_agent"
         }
@@ -117,7 +112,6 @@ def build_rag_workflow() -> StateGraph:
     
     # All agents end at guardrail
     workflow.add_edge("retrieval_agent", "guardrail")
-    workflow.add_edge("comparison_agent", "guardrail")
     workflow.add_edge("advisory_agent", "guardrail")
     workflow.add_edge("faq_agent", "guardrail")
     

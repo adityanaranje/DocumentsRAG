@@ -1,9 +1,82 @@
 import os
 import threading
+import json
+import hashlib
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 from typing import List
+
+from langchain_core.embeddings import Embeddings
+from typing import List
+
+class CachedEmbeddings(Embeddings):
+    """
+    Wrapper for embeddings to cache results locally.
+    Avoids re-computing embeddings for identical text.
+    """
+    def __init__(self, wrapped_embeddings, cache_path="rag/embeddings_cache.json"):
+        self.wrapped = wrapped_embeddings
+        self.cache_path = cache_path
+        self.cache = {}
+        self._load_cache()
+        self._lock = threading.Lock()
+
+    def _load_cache(self):
+        if os.path.exists(self.cache_path):
+            try:
+                with open(self.cache_path, "r", encoding="utf-8") as f:
+                    self.cache = json.load(f)
+            except: self.cache = {}
+            
+    def _save_cache(self):
+        with self._lock:
+            try:
+                os.makedirs(os.path.dirname(self.cache_path), exist_ok=True)
+                with open(self.cache_path, "w", encoding="utf-8") as f:
+                    json.dump(self.cache, f)
+            except Exception as e:
+                print(f"Failed to save embedding cache: {e}")
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        results = []
+        texts_to_embed = []
+        indices_to_embed = []
+        
+        # Check cache
+        for i, text in enumerate(texts):
+            h = hashlib.md5(text.encode()).hexdigest()
+            if h in self.cache:
+                results.append(self.cache[h])
+            else:
+                results.append(None) # Placeholder
+                texts_to_embed.append(text)
+                indices_to_embed.append(i)
+        
+        # Compute missing
+        if texts_to_embed:
+            print(f"Computing embeddings for {len(texts_to_embed)} new items...")
+            new_embeddings = self.wrapped.embed_documents(texts_to_embed)
+            
+            for idx, emb, text in zip(indices_to_embed, new_embeddings, texts_to_embed):
+                results[idx] = emb
+                h = hashlib.md5(text.encode()).hexdigest()
+                self.cache[h] = emb
+            
+            # Save incrementally
+            self._save_cache()
+            
+        return results
+
+    def embed_query(self, text: str) -> List[float]:
+        h = hashlib.md5(text.encode()).hexdigest()
+        if h in self.cache:
+            return self.cache[h]
+        
+        emb = self.wrapped.embed_query(text)
+        self.cache[h] = emb
+        self._save_cache()
+        return emb
 
 class VectorStoreManager:
     _embeddings = None
@@ -13,9 +86,12 @@ class VectorStoreManager:
         self.index_path = index_path
         if VectorStoreManager._embeddings is None:
             # Load embeddings model once
-            VectorStoreManager._embeddings = HuggingFaceEmbeddings(
+            base_embeddings = HuggingFaceEmbeddings(
                 model_name="sentence-transformers/all-MiniLM-L6-v2"
             )
+            # Wrap with caching
+            VectorStoreManager._embeddings = CachedEmbeddings(base_embeddings)
+            
         self.embeddings = VectorStoreManager._embeddings
     
     def create_vector_store(self, documents: List[Document], batch_size: int = 100):

@@ -1,4 +1,6 @@
 import re
+import time
+import json
 from typing import Dict, List, Any, Optional
 from collections import defaultdict
 from agents.states import AgentState, ExtractedEntities
@@ -15,13 +17,12 @@ COMPLIANCE_DISCLAIMER = (
 # Prompting rules for all agents
 COMPLIANCE_RULES = """
 CRITICAL RULES:
-- ❌ NO invented plan names - only use plans from the provided context
-- ❌ NO assumptions beyond documents - if info is missing, say so explicitly
-- ❌ NO meta-commentary. DO NOT mention "the provided context", "the documents", "the text", or "internal state".
-- ✅ CIS overrides brochure for: exclusions, charges, conditions
-- ✅ Use structured output (markdown tables) for comparisons
-- ✅ Simple, clear language for end users
-- ✅ Provide "OUTPUT ONLY" - start answering the user's question directly.
+- ❌ OUT-OF-BOUNDS REFUSAL: If the user asks about topics NOT related to insurance (e.g., booking flights, recipes, general news), you MUST politely refuse and state that you can only assist with insurance-related queries.
+- ❌ NO hallucinations - if a plan name is not in the provided context, state clearly that you do not have information about that specific plan.
+- ❌ NO assumptions - if numerical data or policy details are missing from the context, do NOT invent them. Say "Information not available."
+- ❌ NO meta-commentary - start answering the question directly.
+- ✅ PROPER REDIRECTION: After refusing an out-of-bounds query, invite the user to ask about insurance products, available plans, or policy definitions.
+- ✅ GROUNDING: Only use facts from the provided context. CIS overrides brochure for exclusions/charges.
 """
 
 
@@ -48,15 +49,19 @@ class AgentNodes:
         if retriever:
             retriever.reload()
 
+    def _log_debug(self, msg: str):
+        """Internal debug logger."""
+        print(f"[DEBUG] {msg}")
+
     # =========================================================================
     # NODE 1: Query Rewriter
     # =========================================================================
     def query_rewriter_node(self, state: AgentState) -> Dict[str, Any]:
         """
-        Rewrites query to be self-contained based on chat history.
-        Resolves pronouns and references.
+        Rewrites conversational queries into self-contained, RAG-friendly queries.
+        Uses conversation history to resolve pronouns and implicit context.
         """
-        llm = LLMFactory.get_llm("small")
+        llm = LLMFactory.get_llm("low")
         query = state["input"]
         history = state.get("chat_history", [])
         
@@ -64,16 +69,15 @@ class AgentNodes:
             return {"input": query}
             
         system_prompt = (
-            "You are a query rewriter for an insurance RAG system. "
-            "Your task is to rewrite the latest question to be self-contained.\n\n"
+            "You are a professional query rewriter for an insurance consultation system. "
+            "Rewrite the latest user input to be a standalone search/extraction query.\n\n"
             "RULES:\n"
-            "1. ALWAYS resolve pronouns (it, they, these) or vague terms (the plan, previous one) using the previous context.\n"
-            "2. If the user asks a follow-up about 'it' or 'the plan', replace it with the specific plan name mentioned last.\n"
-            "3. If the user asks 'is it good for me' or similar, rewrite it to '[Plan Name] recommendation for [user details if any]'.\n"
-            "4. If the query is already very specific and names a plan, keep it mostly as-is but ensure insurer names are present.\n"
-            "5. Do NOT cross-pollinate unrelated queries. If the user switches topics completely, ignore the history.\n"
-            "6. NEVER return a conversational response, suggestion, or question. If you cannot resolve a reference, return the original 'Latest' query as is.\n"
-            "7. Return ONLY the rewritten query text."
+            "1. If the user provides a missing profile detail (e.g., 'pt 20'), combine it with previous profile data into a recommendation request: "
+            "'I want an insurance calculation for [age/gender] with Policy Term 20 years'.\n"
+            "2. Resolve all pronouns (it, they) and vague terms (the plan, previous one).\n"
+            "3. IMPORTANT: For general questions (e.g., 'What is PPT?') or broad listings (e.g., 'Show all plans'), do NOT inject the user's age/gender if it wasn't requested. Keep the search query clean.\n"
+            "4. Only preserve profile details (age, budget) if the user's latest query is a follow-up about a specific calculation or plan recommendation.\n"
+            "5. Return ONLY the rewritten query text."
         )
         
         history_str = "\n".join([f"- {h}" for h in history[-5:]])  # Last 5 turns
@@ -99,107 +103,232 @@ class AgentNodes:
         llm = LLMFactory.get_llm("small")
         query = state["input"].lower()
         
-        # Fast keyword-based classification first
-        if any(kw in query for kw in ["list", "which plans", "what plans", "all plans", "available plans", "show me plans"]):
-            return {"intent": "list_plans"}
+        # 1. Plan Details (specific plan mentioned)
+        # Check specific plan indicators
+        specific_plan_indicators = ["star", "guaranteed income", "bharat savings", "premier", "smart value",
+                                   "raksha", "saral jeevan", "edelweiss", "tata", "generali", "pramerica",
+                                   "canara", "indusind", "max life", "hdfc", "icici"]
         
-        if any(kw in query for kw in ["compare", "vs", "versus", "difference between", "which is better"]):
-            return {"intent": "compare_plans"}
+        has_plan_name = any(plan in query for plan in specific_plan_indicators)
         
-        if any(kw in query for kw in ["suggest", "recommend", "best for", "should i", "suitable for"]):
-            return {"intent": "recommendation"}
+        if has_plan_name and ("benefit" in query or "feature" in query or "detail" in query or "eligibility" in query):
+             return {"intent": "plan_details", "query_complexity": "low"}
+        
+        # 2. Comparison (compare, difference, vs)
+        compare_keywords = ["compare", "difference", "better", "vs", "versus", "or"]
+        if any(kw in query for kw in compare_keywords) and has_plan_name:
+            return {"intent": "compare_plans", "query_complexity": "high"}
+        
+        # 3. Listing queries - CHECK BEFORE RECOMMENDATION (to avoid "term" matching)
+        listing_keywords = ["list", "show me", "available", "which plans", "what plans", 
+                            "types of", "providers", "insurers", "all plans"]
+        if any(kw in query for kw in listing_keywords):
+            return {"intent": "list_plans", "query_complexity": "low"}
+        
+        # 4. General FAQ queries - CHECK BEFORE RECOMMENDATION
+        # These include "what is", "what does", "explain", "define"
+        faq_keywords = ["what is", "what does", "explain", "define", "meaning of", "tell me about insurance", 
+                        "what are the types", "difference between", "how does insurance"]
+        if any(kw in query for kw in faq_keywords):
+             return {"intent": "general_query", "query_complexity": "low"}
+        
+        # 5. Recommendation/Calculation queries
+        # IMPORTANT: Only specific recommendation indicators, avoiding generic words like "term", "mode"
+        recommendation_keywords = ["suggest", "recommend", "best for", "should i", "suitable for", 
+                                   "calculate", "how much will i get", "what will i get",
+                                   "i am", "i'm", "my age", "my budget", "my premium",
+                                   "years old", "year old"]
+        
+        # Also check for profile indicators (age, gender) combined with numbers/plan mention
+        has_profile = any(kw in query for kw in ["male", "female", "age =", "age=", "premium =", "premium=", 
+                                                  "pt =", "pt=", "ppt =", "ppt="])
+        has_numbers_with_context = any(kw in query for kw in recommendation_keywords) or has_profile
+        
+        if has_numbers_with_context:
+            return {"intent": "recommendation", "query_complexity": "high"}
+            
+        # 6. Fallback for explicit plan names if not caught by others
+        if has_plan_name:
+            return {"intent": "plan_details", "query_complexity": "low"}
+        
+        # 7. Follow-up detection
+        if len(state.get("chat_history", [])) > 0 and ("details" in query or "more" in query):
+            return {"intent": "plan_details", "query_complexity": "low"}
+
+            
+        # Default fallback
+        return {"intent": "general_query", "query_complexity": "low"}
         
         # LLM-based classification for ambiguous cases
-        system_prompt = (
-            "Classify the user's insurance query into ONE of:\n"
-            "- 'plan_details': Asking about features, benefits, eligibility of a SPECIFIC plan\n"
-            "- 'list_plans': Wants to know WHICH plans are available\n"
-            "- 'compare_plans': Wants to COMPARE 2+ plans side-by-side\n"
-            "- 'recommendation': Seeks personalized advice based on their profile\n"
-            "- 'general_query': General insurance terminology or concepts\n\n"
-            "Return ONLY the category name."
-        )
+        # This section is removed as per the instructions.
+        # system_prompt = (
+        #     "Classify the user's insurance query into ONE of:\n"
+        #     "- 'plan_details': Asking about features, benefits, eligibility of a SPECIFIC plan (should retrieve from documents)\n"
+        #     "- 'list_plans': Wants to know WHICH plans are available from an insurer or category\n"
+        #     "- 'recommendation': Seeks personalized benefit calculations or plan suggestions based on their profile (age, gender, premium)\n"
+        #     "- 'general_query': General insurance terminology, concepts, or FAQs (not specific plans)\n\n"
+        #     "IMPORTANT: 'What are the benefits of [Plan Name]' is 'plan_details', NOT 'recommendation'\n"
+        #     "Return ONLY the category name."
+        # )
         
-        response = llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=query)])
-        intent = getattr(response, 'content', str(response)).lower().strip()
+        # response = llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=query)])
+        # intent = getattr(response, 'content', str(response)).lower().strip()
         
-        valid_intents = ['list_plans', 'plan_details', 'compare_plans', 'recommendation', 'general_query']
-        if intent not in valid_intents:
-            intent = "plan_details"  # Default fallback
+        # valid_intents = ['list_plans', 'plan_details', 'recommendation', 'general_query']
+        # if intent not in valid_intents:
+        #     intent = "plan_details"  # Default fallback
             
-        return {"intent": intent}
+        # return {"intent": intent}
 
-    # =========================================================================
-    # NODE 3: Entity Extractor
-    # =========================================================================
     def entity_extractor_node(self, state: AgentState) -> Dict[str, Any]:
         """
-        Extracts structured entities from the query:
-        - provider (insurer names)
-        - insurance_type (term, ulip, savings, etc.)
-        - plan_names (specific plan names mentioned)
-        - user_profile (age, income, smoker, dependents, goal)
+        Extracts structured entities from the query.
         """
-        query = state["input"].lower()
+
+
+        # DEBUG: Write to file to ensure we see it
+        # try:
+        #     with open("extraction_debug.log", "a") as f:
+        #         f.write(f"\n\n[TIME] Execution at {time.time()}\n")
+        #         f.write(f"[INPUT] {state.get('input', 'NO INPUT')}\n")
+        #         f.write(f"[INTENT] {state.get('intent', 'NOT SET')}\n")
+        # except: pass
         
-        # Extract providers
-        provider_map = {
-            "edelweiss": "Edelweiss Life",
-            "tata": "TATA AIA",
-            "tata aia": "TATA AIA",
-            "generali": "Generali Central",
-            "central": "Generali Central",
-            "pramerica": "PRAMERICA"
-        }
-        providers = []
-        for keyword, name in provider_map.items():
-            if keyword in query and name not in providers:
-                providers.append(name)
+        # DEBUG: Write to file to ensure we see it
+        try:
+            with open("extraction_debug.log", "a") as f:
+                f.write(f"\n\n[TIME] Execution at {time.time()}\n")
+                f.write(f"[INPUT] {state.get('input', 'NO INPUT')}\n")
+                f.write(f"[INTENT] {state.get('intent', 'NOT SET')}\n")
+        except: pass
+
+        try:
+            print(f"[ENTITY DEBUG] ===== STARTING ENTITY EXTRACTION =====")
+            # FORCE extraction for debugging if needed, but rely on logic
+            
+            try:
+                with open("extraction_debug.log", "a") as f:
+                    f.write(f"[STATUS] Starting extraction logic...\n")
+            except: pass
+
+            query = state["input"].lower()
+            
+            # Extract providers
+            provider_map = {
+                "edelweiss": "Edelweiss Life",
+                "tata": "TATA AIA",
+                "tata aia": "TATA AIA",
+                "generali": "Generali Central",
+                "central": "Generali Central",
+                "pramerica": "PRAMERICA"
+            }
+            providers = []
+            for keyword, name in provider_map.items():
+                if keyword in query and name not in providers:
+                    providers.append(name)
+            
+            # Extract insurance types
+            type_map = {
+                "term": ["Term Insurance", "Term Plan"],
+                "ulip": ["Unit Linked Insurance Plan", "ULIP Plan"],
+                "wealth": ["Unit Linked Insurance Plan"],
+                "savings": ["Savings Plan", "Guaranteed Return"],
+                "retirement": ["Retirement and Pension"],
+                "pension": ["Retirement and Pension"],
+                "health": ["Health Insurance"],
+                "group": ["Group Plan"]
+            }
+            insurance_types = []
+            for keyword, types in type_map.items():
+                if keyword in query:
+                    for t in types:
+                        if t not in insurance_types:
+                            insurance_types.append(t)
+            
+            # Extract specific plan names using LLM
+            plan_names = self._extract_plan_names_from_query(state["input"])
+            
+            # Extract user profile (Merge with existing data in state AND chat history)
+            existing_profile = state.get("extracted_entities", {}).get("user_profile", {})
+            history = state.get("chat_history", [])
+            new_profile = {}
+            
+            # Always attempt extraction if it's a recommendation or if profile indicators exist
+            profile_indicators = ["old", "male", "female", "year", "lakh", "rs", "budget", "premium", "invest", "benefit", "pt ", "ppt ", "mode", "age"]
+            should_extract = any(ind in query for ind in profile_indicators) or state.get("intent") == "recommendation"
+            
+            print(f"[EXTRACTION DEBUG] Should extract: {should_extract}, Intent: {state.get('intent')}")
+            
+            try:
+                with open("extraction_debug.log", "a") as f:
+                    f.write(f"[STATUS] Should extract: {should_extract}\n")
+            except: pass
+
+            if should_extract:
+                new_profile = self._extract_user_profile(state["input"], history=history)
+                print(f"[EXTRACTION DEBUG] Extracted profile: {new_profile}")
+                try:
+                    with open("extraction_debug.log", "a") as f:
+                        f.write(f"[STATUS] Extracted profile: {new_profile}\n")
+                except: pass
+            
+            # Merge: new data overwrites old, but old data is kept if not in new
+            # IMPORTANT: Ensure keys with 'null' or empty values in new_profile do not overwrite valid existing data
+            user_profile = existing_profile.copy()
+            for k, v in new_profile.items():
+                if v is not None and v != "" and v != "null":
+                    user_profile[k] = v
+            
+            # Explicitly handle keys that often get dropped or overwritten incorrectly
+            if "policy_term" in new_profile and str(new_profile["policy_term"]).strip():
+                 user_profile["policy_term"] = new_profile["policy_term"]
+            
+            entities: ExtractedEntities = {
+                "provider": list(set(providers)) if providers else [],
+                "insurance_type": list(set(insurance_types)) if insurance_types else [],
+                "plan_names": list(set(plan_names)) if plan_names else [],
+                "user_profile": user_profile
+            }
+            
+            # Build metadata filters from entities
+            filters = {}
+            if providers:
+                filters["insurer"] = providers
+            if insurance_types:
+                filters["insurance_type"] = insurance_types
         
-        # Extract insurance types
-        type_map = {
-            "term": ["Term Insurance", "Term Plan"],
-            "ulip": ["Unit Linked Insurance Plan", "ULIP Plan"],
-            "wealth": ["Unit Linked Insurance Plan"],
-            "savings": ["Savings Plan", "Guaranteed Return"],
-            "retirement": ["Retirement and Pension"],
-            "pension": ["Retirement and Pension"],
-            "health": ["Health Insurance"],
-            "group": ["Group Plan"]
-        }
-        insurance_types = []
-        for keyword, types in type_map.items():
-            if keyword in query:
-                for t in types:
-                    if t not in insurance_types:
-                        insurance_types.append(t)
-        
-        # Extract specific plan names using LLM
-        plan_names = self._extract_plan_names_from_query(state["input"])
-        
-        # Extract user profile for recommendation intent
-        user_profile = {}
-        if state.get("intent") == "recommendation":
-            user_profile = self._extract_user_profile(state["input"])
-        
-        entities: ExtractedEntities = {
-            "provider": list(set(providers)) if providers else [],
-            "insurance_type": list(set(insurance_types)) if insurance_types else [],
-            "plan_names": list(set(plan_names)) if plan_names else [],
-            "user_profile": user_profile or {}
-        }
-        
-        # Build metadata filters from entities
-        filters = {}
-        if providers:
-            filters["insurer"] = providers
-        if insurance_types:
-            filters["insurance_type"] = insurance_types
-        
-        return {
-            "extracted_entities": entities,
-            "metadata_filters": filters
-        }
+            try:
+                with open("extraction_debug.log", "a") as f:
+                    f.write(f"[RESULT] Entities: {entities}\n")
+                    f.write(f"[RESULT] Profile: {user_profile}\n")
+            except: pass
+                
+            print(f"[ENTITY DEBUG] Final entities: {entities}")
+            result = {
+                "extracted_entities": entities,
+                "metadata_filters": filters
+            }
+            return result
+        except Exception as e:
+            try:
+                with open("extraction_debug.log", "a") as f:
+                    f.write(f"[ERROR] {str(e)}\n")
+                    import traceback
+                    f.write(traceback.format_exc())
+            except: pass
+                
+            print(f"[ENTITY DEBUG] Error: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "extracted_entities": {
+                    "provider": [],
+                    "insurance_type": [],
+                    "plan_names": [],
+                    "user_profile": {}
+                },
+                "metadata_filters": {}
+            }
 
     def _extract_plan_names_from_query(self, query: str) -> List[str]:
         """Use LLM to extract specific plan names mentioned in query."""
@@ -234,46 +363,203 @@ class AgentNodes:
         
         return plan_names
 
-    def _extract_user_profile(self, query: str) -> Dict[str, Any]:
-        """Extract user profile information for recommendations."""
-        llm = LLMFactory.get_llm("small")
-        
-        system_prompt = (
-            "Extract user profile from the insurance query.\n"
-            "Return in format:\n"
-            "age: <number or null>\n"
-            "smoker: <yes/no or null>\n"
-            "cover_amount: <amount or null>\n"
-            "goal: <protection/savings/retirement/wealth or null>\n"
-            "dependents: <number or null>"
-        )
-        
-        response = llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=query)])
-        result = getattr(response, 'content', str(response))
-        
+    def _extract_user_profile(self, query: str, history: List[str] = None) -> Dict[str, Any]:
+        """Extract user profile information for recommendations, using history if available."""
         profile = {}
-        for line in result.split('\n'):
-            if ':' in line:
-                key, value = line.split(':', 1)
-                key = key.strip().lower()
-                value = value.strip().lower()
-                if value not in ['null', 'none', 'n/a', '']:
-                    if key == 'age':
-                        try:
-                            profile['age'] = int(re.search(r'\d+', value).group())
-                        except:
-                            pass
-                    elif key == 'smoker':
-                        profile['smoker'] = 'yes' in value
-                    elif key == 'cover_amount':
-                        profile['cover_amount'] = value
-                    elif key == 'goal':
-                        profile['goal'] = value
-                    elif key == 'dependents':
-                        try:
-                            profile['dependents'] = int(re.search(r'\d+', value).group())
-                        except:
-                            pass
+        
+        # ========================================================================
+        # PRIORITY 1: REGEX EXTRACTION (Most Reliable)
+        # ========================================================================
+        # These patterns work with formats like:
+        # "age=30", "age = 30", "age is 30", "I am 30 years old"
+        
+        query_lower = query.lower()
+        
+        # Age extraction
+        age_patterns = [
+            r'\bage\s*[=:]\s*(\d+)',  # age=30, age = 30, age: 30
+            r'\bage\s+is\s+(\d+)',     # age is 30
+            r'i\s+am\s+(\d+)\s+years?\s+old',  # I am 30 years old
+            r'(\d+)\s+years?\s+old',  # 30 years old
+            r'\bage\s+(\d+)\b',        # age 30
+        ]
+        for pattern in age_patterns:
+            match = re.search(pattern, query_lower)
+            if match and not profile.get('age'):
+                try:
+                    age = int(match.group(1))
+                    if 18 <= age <= 100:  # Expanded age range
+                        profile['age'] = age
+                        break
+                except: pass
+        
+        # Gender extraction
+        if 'gender' not in profile:
+            if re.search(r'gender\s*[=:]\s*(male|m\b)', query_lower) or \
+               re.search(r'gender\s+is\s+(male|m\b)', query_lower) or \
+               re.search(r'\bmale\b', query_lower):
+                profile['gender'] = 'male'
+            elif re.search(r'gender\s*[=:]\s*(female|f\b)', query_lower) or \
+                 re.search(r'gender\s+is\s+(female|f\b)', query_lower) or \
+                 re.search(r'\bfemale\b', query_lower):
+                profile['gender'] = 'female'
+        
+        # Premium extraction
+        premium_patterns = [
+            r'premium\s*[=:]\s*([\d,\.]+)',  # premium=100000.50
+            r'premium\s+(?:amount\s+)?(?:is\s+)?(?:of\s+)?([\d,\.]+)', 
+            r'invest(?:ing)?\s+([\d,\.]+)\s*(?:lakh|lac|cr|crore|k|thousand)?',
+            r'([\d,\.]+)\s*(?:lakh|lac|cr|crore|k|thousand)\s+(?:per year|annual|premium)',
+            r'budget\s*[=:]\s*([\d,\.]+)',
+        ]
+        
+        def parse_indian_amount(text):
+            """Parse amounts like '1 lakh', '5.5 cr', '100,000'"""
+            if not text: return None
+            text = text.lower().replace(',', '').strip()
+            
+            multiplier = 1
+            if 'lakh' in text or 'lac' in text: multiplier = 100000
+            elif 'cr' in text or 'crore' in text: multiplier = 10000000
+            elif 'k' in text: multiplier = 1000
+            
+            # Find the number in the segment
+            nums = re.findall(r'(\d+(?:\.\d+)?)', text)
+            if nums:
+                try:
+                    return int(float(nums[0]) * multiplier)
+                except: return None
+            return None
+        
+        for pattern in premium_patterns:
+            match = re.search(pattern, query_lower)
+            if match and not profile.get('premium_amount'):
+                # Pass the matched segment to parser
+                amount = parse_indian_amount(match.group(0))
+                if amount and 500 <= amount <= 50000000:
+                    profile['premium_amount'] = str(amount)
+                    break
+        
+        # Policy Term (PT)
+        pt_patterns = [
+            r'\bpt\s*[=:]\s*(\d+)',
+            r'\bpt\s+(\d+)\b',
+            r'policy\s+term\s*[=:]\s*(\d+)',
+            r'policy\s+term\s+(?:of\s+)?(\d+)',
+            r'term\s*[=:]\s*(\d+)\b',
+        ]
+        for pattern in pt_patterns:
+            match = re.search(pattern, query_lower)
+            if match and not profile.get('policy_term'):
+                pt = match.group(1)
+                profile['policy_term'] = pt + " years"
+                break
+        
+        # Payment Term (PPT)
+        ppt_patterns = [
+            r'\bppt\s*[=:]\s*(\d+)',
+            r'\bppt\s+(\d+)\b',
+            r'(?:premium\s+)?payment\s+term\s*[=:]\s*(\d+)',
+            r'paying\s+term\s*[=:]\s*(\d+)',
+            r'pay\s+term\s*[=:]\s*(\d+)',
+        ]
+        for pattern in ppt_patterns:
+            match = re.search(pattern, query_lower)
+            if match and not profile.get('payment_term'):
+                ppt = match.group(1)
+                profile['payment_term'] = ppt + " years"
+                break
+        
+        # Payment Mode
+        mode_patterns = [
+            r'mode\s*[=:]\s*(monthly|annual|yearly|quarterly|half\s*yearly)',
+            r'(?:premium\s+)?(?:payment\s+)?mode\s+(?:is\s+)?(monthly|annual|yearly|quarterly)',
+            r'\b(monthly|annual|yearly|quarterly)\b',
+        ]
+        for pattern in mode_patterns:
+            match = re.search(pattern, query_lower)
+            if match and not profile.get('payment_mode'):
+                mode = match.group(1).strip()
+                if mode == 'yearly': mode = 'annual'
+                profile['payment_mode'] = mode
+                break
+        
+        # ========================================================================
+        # PRIORITY 2: LLM EXTRACTION (Fallback for complex cases)
+        # ========================================================================
+        # Use LLM if critical fields are missing OR if it's a recommendation intent
+        critical_fields = ['age', 'gender', 'premium_amount']
+        missing_critical = any(field not in profile for field in critical_fields)
+        
+        if missing_critical:
+            llm = LLMFactory.get_llm("medium")
+            
+            history_context = ""
+            if history:
+                history_str = "\n".join([f"- {h}" for h in history[-5:]])
+                history_context = f"\n\nCONVERSATION HISTORY:\n{history_str}"
+                
+            system_prompt = (
+                "Extract user profile details for insurance recommendations.\n"
+                "JSON Output fields (use null if unknown):\n"
+                "- age (number)\n"
+                "- gender (male/female)\n"
+                "- premium_amount (number)\n"
+                "- policy_term (number of years)\n"
+                "- payment_term (number of years)\n"
+                "- payment_mode (Monthly/Annual/Quarterly/Half-Yearly)\n\n"
+                "MAPPING RULES:\n"
+                "- PT = policy_term\n"
+                "- PPT = payment_term\n"
+                "- mode = payment_mode\n"
+                "- Extract from latest query AND history. Latest query wins conflicts.\n"
+                "Return ONLY a raw JSON object."
+            )
+            
+            prompt = f"LATEST QUERY: {query}{history_context}"
+            
+            try:
+                response = llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=prompt)])
+                result_text = getattr(response, 'content', str(response))
+                
+                # Try to parse JSON
+                try:
+                    # Clean the response in case LLM added markdown blocks
+                    clean_json = re.search(r'\{.*\}', result_text, re.DOTALL)
+                    if clean_json:
+                        llm_profile = json.loads(clean_json.group(0))
+                        
+                        # Merge LLM results into profile if regex didn't find them
+                        if 'age' not in profile and llm_profile.get('age'):
+                            profile['age'] = int(llm_profile['age'])
+                        if 'gender' not in profile and llm_profile.get('gender'):
+                            profile['gender'] = llm_profile['gender'].lower()
+                        if 'premium_amount' not in profile and llm_profile.get('premium_amount'):
+                            profile['premium_amount'] = str(llm_profile['premium_amount'])
+                        if 'policy_term' not in profile and llm_profile.get('policy_term'):
+                            profile['policy_term'] = str(llm_profile['policy_term']) + " years"
+                        if 'payment_term' not in profile and llm_profile.get('payment_term'):
+                            profile['payment_term'] = str(llm_profile['payment_term']) + " years"
+                        if 'payment_mode' not in profile and llm_profile.get('payment_mode'):
+                            profile['payment_mode'] = llm_profile['payment_mode'].title().replace('Annual', 'annual').lower()
+                except:
+                    # Fallback to line-based parsing if JSON fails
+                    for line in result_text.split('\n'):
+                        if ':' in line:
+                            parts = line.split(':', 1)
+                            k = parts[0].strip().lower()
+                            v = parts[1].strip().lower().replace('"', '').replace("'", "")
+                            if v and v != 'null':
+                                if 'age' in k and 'age' not in profile: 
+                                    nums = re.findall(r'\d+', v)
+                                    if nums: profile['age'] = int(nums[0])
+                                elif 'gender' in k and 'gender' not in profile: profile['gender'] = v
+                                elif 'premium' in k and 'premium_amount' not in profile: profile['premium_amount'] = v
+                                elif 'policy_term' in k or 'pt' == k and 'policy_term' not in profile: profile['policy_term'] = v + " years"
+                                elif 'payment_term' in k or 'ppt' == k and 'payment_term' not in profile: profile['payment_term'] = v + " years"
+                
+            except Exception as e:
+                print(f"[WARNING] LLM extraction failed: {e}")
         
         return profile
 
@@ -532,7 +818,7 @@ class AgentNodes:
             aggregated[plan_id] = final_chunks
         
         # Refresh context strings based on aggregated chunks
-        intent = state.get("intent", "plan_details")
+        intent = state.get("intent", "compare_plans")
         limit = 5 if intent == "compare_plans" else 3
         context = self._format_context(aggregated, limit=limit)
         
@@ -595,19 +881,43 @@ class AgentNodes:
     # =========================================================================
     def retrieval_agent(self, state: AgentState) -> Dict[str, Any]:
         """
-        Provides detailed information about a specific plan.
-        Grounds all responses in retrieved documents.
+        Agent for answering plan-specific or comparison questions using retrieved context.
         """
-        llm = LLMFactory.get_llm("medium")
+        complexity = state.get("query_complexity", "low")
+        llm = LLMFactory.get_llm(complexity)
+        
         query = state["input"]
         context = state.get("context", [])
+        entities = state.get("extracted_entities", {})
         
         if not context:
-            # Fallback retrieval
+            # Fallback retrieval with better filtering
             retriever = self._get_retriever()
             if retriever:
-                docs = retriever.search(query, k=5)
-                context = [f"[{d.metadata.get('product_name')}] {d.page_content}" for d in docs]
+                # Try to extract plan names from query for better filtering
+                plan_names = entities.get("plan_names", [])
+                filters = state.get("metadata_filters", {})
+                
+                # If we have plan names, use them for filtering
+                if plan_names:
+                    filters["product_name"] = plan_names
+                
+                # Retrieve with filters
+                if filters:
+                    docs = retriever.search(query, filters=filters, k=10)
+                else:
+                    docs = retriever.search(query, k=10)
+                
+                # Format context with plan names
+                context = [f"[{d.metadata.get('product_name', 'Unknown')}] {d.page_content}" for d in docs]
+        
+        # If still no context, provide a helpful message
+        if not context:
+            return {
+                "answer": "I couldn't find specific information about that plan in my knowledge base. "
+                         "Could you please provide more details or try asking about a different plan? "
+                         "You can also ask me to list available plans."
+            }
         
         context_str = "\n\n".join(context)
         
@@ -615,10 +925,12 @@ class AgentNodes:
 
 {COMPLIANCE_RULES}
 
-Answer the user's question using ONLY the Policy Context provided to you.
-If information is not in the context, say "I don't have that specific information in our documents."
-DO NOT mention that you are looking at documents or context. Just provide the answer.
-Be warm and helpful while maintaining accuracy."""
+STRICT GROUNDING RULES:
+- Answer the user's question using the Policy Context provided to you.
+- If the requested plan is NOT mentioned in the Policy Context, say: "I'm sorry, but I couldn't find information regarding [Plan Name] in our current policy database. Please verify the name or ask me to list available plans."
+- If the question is about non-insurance topics, refuse using the OUT-OF-BOUNDS REFUSAL rule.
+- Structure your response with clear headings and bullet points.
+"""
         
         prompt = f"Policy Context:\n{context_str}\n\nUser Question: {query}"
         
@@ -628,53 +940,13 @@ Be warm and helpful while maintaining accuracy."""
         return {"answer": answer}
 
     # =========================================================================
-    # NODE 9: Comparison Agent
-    # =========================================================================
-    def comparison_agent(self, state: AgentState) -> Dict[str, Any]:
-        """
-        Generates structured side-by-side comparisons.
-        Normalizes attributes across plans.
-        """
-        llm = LLMFactory.get_llm("medium")
-        query = state["input"]
-        context = state.get("context", [])
-        chunks_by_plan = state.get("retrieved_chunks", {})
-        
-        # Get plan names being compared
-        plan_names = list(chunks_by_plan.keys()) if chunks_by_plan else []
-        
-        if not context and not plan_names:
-            return {"answer": "I couldn't find the plans you want to compare. Please specify the plan names."}
-        
-        context_str = "\n\n".join(context)
-        plans_info = f"\n\nPlans to compare: {', '.join(plan_names)}" if plan_names else ""
-        
-        system_prompt = f"""You are an Insurance Comparison Expert.
-
-{COMPLIANCE_RULES}
-
-COMPARISON FORMAT:
-- Return comparison as a Markdown TABLE
-- Columns: Features | Plan 1 | Plan 2 | ...
-- Rows: Plan Type, Eligibility, Sum Assured, Premium Terms, Key Benefits, Exclusions
-- If a detail is missing, put "Not specified"
-- Include ALL plans mentioned in the context
-- Be objective and factual"""
-        
-        prompt = f"Policy Context:\n{context_str}{plans_info}\n\nUser Question: {query}"
-        
-        response = llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=prompt)])
-        answer = getattr(response, 'content', str(response))
-        
-        return {"answer": answer, "reasoning_output": f"Compared {len(plan_names)} plans"}
-
-    # =========================================================================
-    # NODE 10: Recommendation Agent (Advisory)
+    # NODE 9: Recommendation Agent (Advisory)
     # =========================================================================
     def advisory_agent(self, state: AgentState) -> Dict[str, Any]:
         """
         Provides personalized recommendations based on user profile.
         Grounds all advice in retrieved documents.
+        If critical info (age/gender/premium) is missing for specific plans, asks for it.
         """
         llm = LLMFactory.get_llm("large")
         query = state["input"]
@@ -682,35 +954,75 @@ COMPARISON FORMAT:
         entities = state.get("extracted_entities", {})
         user_profile = entities.get("user_profile", {})
         
-        context_str = "\n\n".join(context) if context else "No specific plans found matching your criteria."
+        # Check for Insurer and Guaranteed/Savings context
+        providers = entities.get("provider", [])
+        is_guaranteed = any(t in ["Savings Plan", "Guaranteed Return"] for t in entities.get("insurance_type", []))
+        is_rec = state.get("intent") == "recommendation"
+        
+        # Only block and ask for info IF the intent is explicitly a recommendation/calculation
+        if is_rec:
+            print(f"[ADVISORY DEBUG] Full entities: {entities}")
+            print(f"[ADVISORY DEBUG] User profile: {user_profile}")
+            missing = []
+            if not user_profile.get("age"): missing.append("age")
+            if not user_profile.get("gender"): missing.append("gender")
+            if not user_profile.get("premium_amount"): missing.append("annual premium amount")
+            if not user_profile.get("policy_term"): missing.append("policy term (PT)")
+            if not user_profile.get("payment_term"): missing.append("premium payment term (PPT)")
+            if not user_profile.get("payment_mode"): missing.append("premium payment mode")
+            
+            print(f"[ADVISORY DEBUG] Missing fields check:")
+            for field in ["age", "gender", "premium_amount", "policy_term", "payment_term", "payment_mode"]:
+                value = user_profile.get(field)
+                print(f"  - {field}: {value} (truthy: {bool(value)})")
+            print(f"[ADVISORY DEBUG] Final missing list: {missing}")
+
+            # Block and ask for info for professional consultation
+            if missing:
+                missing_str = " and ".join([", ".join(missing[:-1]), missing[-1]] if len(missing) > 1 else missing)
+                return {"answer": f"To provide you with specific benefit figures and a professional recommendation, I need a few more details: **{missing_str}**. Could you please provide these?"}
+            
+            # If we have everything, get the numbers
+            calc_result = self.plan_calculator_tool(state)
+            state["reasoning_output"] = calc_result.get("reasoning_output", "")
+        else:
+            # If not a recommendation intent, check if we have enough profile data to show numbers anyway
+            # (e.g., if user asks about a specific plan but we already know their profile)
+            if user_profile.get("age") and user_profile.get("premium_amount") and user_profile.get("policy_term"):
+                calc_result = self.plan_calculator_tool(state)
+                state["reasoning_output"] = calc_result.get("reasoning_output", "")
+        calculation_info = ""
+        raw_calc = state.get('reasoning_output', '')
+        if raw_calc:
+            try:
+                calc_json = json.loads(raw_calc)
+                table = calc_json.get("summary_table", "")
+                if table:
+                    calculation_info = f"\n\n### MANDATORY GROUNDING: NUMERICAL DATA TABLE\n{table}\n(PRIORITIZE THESE PLANS AND NUMBERS OVER ANY TEXT BELOW)\n"
+            except: pass
+
+        context_str = "\n\n".join(context) if context else "No plans found."
         
         profile_info = ""
         if user_profile:
-            profile_parts = []
-            if user_profile.get("age"):
-                profile_parts.append(f"Age: {user_profile['age']}")
-            if user_profile.get("smoker") is not None:
-                profile_parts.append(f"Smoker: {'Yes' if user_profile['smoker'] else 'No'}")
-            if user_profile.get("cover_amount"):
-                profile_parts.append(f"Cover needed: {user_profile['cover_amount']}")
-            if user_profile.get("goal"):
-                profile_parts.append(f"Goal: {user_profile['goal']}")
+            profile_parts = [f"{k}: {v}" for k, v in user_profile.items() if v]
             if profile_parts:
                 profile_info = f"\n\nUser Profile: {', '.join(profile_parts)}"
         
         system_prompt = f"""You are an Expert Insurance Advisor.
-
+ 
 {COMPLIANCE_RULES}
-
+ 
 RECOMMENDATION RULES:
-- Base recommendations ONLY on plans in the context
-- Consider user's age, smoking status, cover requirement if provided
-- Explain WHY a plan suits them based on document features
-- List 2-3 suitable options if available
-- Be clear about eligibility criteria
-- DO NOT reference the "context" or "documents" in your answer. Provide the advice directly."""
+- 🚨 PRIORITY 1: Recommending plans from the 'MANDATORY GROUNDING' table above. Use those EXACT numbers.
+- 🚨 PRIORITY 2: Only provide benefit calculations for the plans in the GROUNDING table.
+- If the user asks about plans not in the table for calculation, say you don't have calculation data for them yet.
+- If the query is out-of-bounds, use the OUT-OF-BOUNDS REFUSAL rule.
+- NEVER say "Not Available" if numbers exist in the grounding table.
+- Be consultative and grounded.
+"""
         
-        prompt = f"Policy Context:\n{context_str}{profile_info}\n\nUser Question: {query}"
+        prompt = f"{calculation_info}\n\nPolicy Context:\n{context_str}{profile_info}\n\nUser Question: {query}"
         
         response = llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=prompt)])
         answer = getattr(response, 'content', str(response))
@@ -722,23 +1034,39 @@ RECOMMENDATION RULES:
     # =========================================================================
     def faq_agent(self, state: AgentState) -> Dict[str, Any]:
         """
-        Handles general insurance questions.
-        Still attempts to ground in documents when possible.
+        Agent for general insurance questions (glossary, concepts).
         """
-        llm = LLMFactory.get_llm("small")
+        llm = LLMFactory.get_llm("low")
         query = state["input"]
         context = state.get("context", [])
+        
+        # Try to retrieve context for general insurance terms if not already provided
+        if not context:
+            retriever = self._get_retriever()
+            if retriever:
+                # Use broader search for general queries
+                docs = retriever.search(query, k=3)  # Reduced from 5 to 3 for more focused context
+                if docs:
+                    context = [d.page_content for d in docs]
         
         context_str = "\n\n".join(context) if context else ""
         
         system_prompt = f"""You are an Insurance Helpdesk Assistant.
 
 {COMPLIANCE_RULES}
+ 
+INSTRUCTIONS:
+- For insurance terminology: Provide a clear, concise definition.
+- 🚨 STRICT RULE: If the user asks about ANYTHING non-insurance related (e.g., travel tickets, cooking, etc.), you MUST refuse and redirect to insurance topics.
+- 🚨 NO HALLUCINATION: If the term is not common insurance knowledge and not in context, say you don't know rather than guessing.
+- Keep the total response under 150 words.
 
-For general insurance terminology questions:
-- Provide accurate, helpful explanations
-- If context is available, use it to give specific examples
-- Keep explanations simple and jargon-free"""
+Common Insurance Terms to use as reference:
+- **Policy Term (PT)**: The total duration for which the policy remains active.
+- **Premium Payment Term (PPT)**: The duration during which premiums must be paid.
+- **Maturity Benefit**: The lump sum amount paid when the policy matures.
+- **Sum Assured**: The guaranteed amount payable on death or maturity.
+"""
         
         prompt = f"Context (if relevant):\n{context_str}\n\nUser Question: {query}" if context_str else f"User Question: {query}"
         
@@ -767,6 +1095,85 @@ For general insurance terminology questions:
             answer = answer + COMPLIANCE_DISCLAIMER
         
         return {"answer": answer}
+
+    # =========================================================================
+    # TOOL: Plan Calculator Tool
+    # =========================================================================
+    def plan_calculator_tool(self, state: AgentState) -> Dict[str, Any]:
+        """
+        Tool logic to calculate benefits using the API's dummy logic.
+        Extremely robust extraction fallback for age, gender, and premium.
+        """
+        from api.plans import get_plan_benefits_tool, resolve_plan_id
+        user_profile = state.get("extracted_entities", {}).get("user_profile", {})
+        plan_names = state.get("extracted_entities", {}).get("plan_names", [])
+        query = state["input"].lower()
+        
+        # --- ROBUST FALLBACKS ---
+        # 1. Age Fallback
+        age = user_profile.get("age")
+        if not age:
+            age_match = re.search(r'\b(\d{2})\b\s*(?:year|yr|old|male|female)?', query)
+            if age_match:
+                age = int(age_match.group(1))
+        
+        # 2. Gender Fallback
+        gender = user_profile.get("gender")
+        if not gender:
+            if "male" in query and "female" not in query: gender = "male"
+            elif "female" in query: gender = "female"
+        
+        # 3. Premium Fallback
+        premium = user_profile.get("premium_amount")
+        clean_premium = 0.0
+        
+        if not premium:
+            # Look for any number followed by a potential unit
+            prem_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:rs\.?|inr|lakh|cr|k|thousand)?', query)
+            if prem_match:
+                val = float(prem_match.group(1))
+                unit_search = query[prem_match.start():prem_match.end()+20] # look ahead
+                if 'lakh' in unit_search: val *= 100000
+                elif 'cr' in unit_search: val *= 10000000
+                elif any(k in unit_search for k in ['k', 'thousand']): val *= 1000
+                clean_premium = val
+        else:
+            try:
+                if isinstance(premium, (int, float)):
+                    clean_premium = float(premium)
+                else:
+                    nums = re.findall(r'\d+\.?\d*', str(premium))
+                    if nums:
+                        clean_premium = float(nums[0])
+                        if 'lakh' in str(premium).lower(): clean_premium *= 100000
+                        elif 'cr' in str(premium).lower(): clean_premium *= 10000000
+            except:
+                pass
+
+        if not (age and gender and clean_premium > 0):
+            return {"reasoning_output": "Insufficient data (age, gender, or premium) to calculate benefits."}
+
+        # 4. Resolve Plan IDs
+        pids = []
+        for name in plan_names:
+            pid = resolve_plan_id(name)
+            if pid: pids.append(pid)
+        
+        # If no specific plan found, calculate for ALL default plans
+        target_plan_id = pids[0] if len(pids) == 1 else None
+        
+        # 5. Execute Tool
+        calculation_json = get_plan_benefits_tool(
+            age=int(age),
+            gender=str(gender),
+            premium_amount=clean_premium,
+            plan_id=target_plan_id,
+            policy_term=user_profile.get("policy_term"),
+            payment_term=user_profile.get("payment_term"),
+            payment_mode=user_profile.get("payment_mode")
+        )
+        
+        return {"reasoning_output": calculation_json}
 
     # =========================================================================
     # HELPER METHODS

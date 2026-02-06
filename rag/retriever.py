@@ -40,8 +40,8 @@ class RAGRetriever:
                         match_found = False
                         for v_item in norm_values:
                             if key in ["insurer", "insurance_type"]:
-                                # Exact match for categories
-                                if v_item == met_val_str:
+                                # Flexible match for categories (containment)
+                                if v_item in met_val_str or met_val_str in v_item:
                                     match_found = True
                                     break
                             else:
@@ -54,7 +54,7 @@ class RAGRetriever:
                     else:
                         norm_value = str(value).lower().strip()
                         if key in ["insurer", "insurance_type"]:
-                            if norm_value != met_val_str:
+                            if norm_value not in met_val_str and met_val_str not in norm_value:
                                 return False
                         else:
                             if norm_value not in met_val_str and met_val_str not in norm_value:
